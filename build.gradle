@@ -34,9 +34,11 @@ def version
 def imageName
 
 task setVersion() {
-    // tag, branchOrTag and versionSuffix are defined in gradle.properties
-    version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
-    imageName = "${project.name}-${version}"
+    doLast {
+        // tag, branchOrTag and versionSuffix are defined in gradle.properties
+        version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
+        imageName = "${project.name}-${version}"
+    }
 }
 
 
@@ -176,7 +178,6 @@ class RetrieveLatestGtoolkitVersionTask extends DefaultTask {
     @Internal String version
 
     String retrieveGtVersion() {
-        println "Retrieving version: ${version}"
         version
     }
 
@@ -198,7 +199,6 @@ class RetrieveLatestGtoolkitVersionTask extends DefaultTask {
 
             }.last()
 
-        println "Setting version to ${result}"
         this.version = result
     }
 }
