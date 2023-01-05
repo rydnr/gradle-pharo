@@ -19,3 +19,4 @@ Pharo*.sources
 *.sml
 SqueakDebug.log
 pharo-local/
+icon-packs/
