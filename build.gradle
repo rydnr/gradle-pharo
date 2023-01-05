@@ -21,6 +21,10 @@ pharo {
 
 ext {
     gtoolkitVersion = 'unknown'
+    version = 'unknown'
+    imageName = 'unknown'
+    branch = 'unknown'
+    versionSuffix = 'unknown'
 }
 
 def Properties properties = new Properties()
@@ -30,71 +34,91 @@ def customPharoUiPath = properties.getProperty('pharoUiPath')
 def customPharoArgs = properties.getProperty('pharoArgs').split(",").toList()
 def gtoolkitHome = properties.getProperty('gtoolkitHome')
 def customGtPath = properties.getProperty('gtoolkitPath')
-def version
-def imageName
 
-task setVersion() {
-    doLast {
-        // tag, branchOrTag and versionSuffix are defined in gradle.properties
-        version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
-        imageName = "${project.name}-${version}"
+def getGitBranch = { ->
+    def stdout = new ByteArrayOutputStream()
+    exec {
+        commandLine 'git', 'rev-parse', '--abbrev-ref', 'HEAD'
+        standardOutput = stdout
     }
+    return stdout.toString().trim()
 }
 
-
-task retrieveLatestGtoolkitVersion(type: RetrieveLatestGtoolkitVersionTask) {
-    doLast {
-        // tag, branchOrTag and versionSuffix are defined in gradle.properties
-        ext.gtoolkitVersion = tasks.retrieveLatestGtoolkitVersion.retrieveGtVersion()
-        version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
-        imageName = "${project.name}-gt${gtoolkitVersion}-${version}"
+def getGitHash = { ->
+    def stdout = new ByteArrayOutputStream()
+    exec {
+        commandLine 'git', 'log', '--pretty=format:%h', '-n 1'
+        standardOutput = stdout
     }
+    return stdout.toString().trim()
 }
-
-task setGtVersion(dependsOn: retrieveLatestGtoolkitVersion)
 
 task removePreviousPharoImage(type: RemovePreviousPharoImageTask)
 
 task removePreviousGtoolkitImage(type: RemovePreviousGtoolkitImageTask)
 
-task downloadFreshPharoImage(type: DownloadPharoImageTask, dependsOn: [ setVersion, removePreviousPharoImage ])
+task downloadFreshPharoImage(type: DownloadPharoImageTask, dependsOn: removePreviousPharoImage) {
+    doFirst {
+        ext.branch = "${getGitBranch()}"
+        ext.versionSuffix = "-${getGitHash()}"
+        ext.version = "${ext.branch}${ext.versionSuffix}"
+        ext.imageName = "${project.name}-${ext.version}"
+        tasks.loadBaseline.expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new repository: 'github://${ghOwner}/${project.name}:${ext.branch}/src'; baseline: '${baseline}'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable ]"
+        tasks.assemble.toImageName = "${ext.imageName}"
+        tasks.runUi.image = "${ext.imageName}.image"
+    }
+}
 
-task retrieveFreshGtoolkitImage(type: RetrieveFreshGtoolkitImageTask, dependsOn: [ setGtVersion, removePreviousGtoolkitImage ]) {
+task retrieveLatestGtoolkitVersion(type: RetrieveLatestGtoolkitVersionTask) {
+    doLast {
+        ext.branch = "${getGitBranch()}"
+        ext.versionSuffix = "-${getGitHash()}"
+        ext.gtoolkitVersion = tasks.retrieveLatestGtoolkitVersion.retrieveGtVersion()
+        ext.version = "${ext.branch}${ext.versionSuffix}"
+        ext.imageName = "${project.name}-gt${ext.gtoolkitVersion}-${ext.version}" // ${version} == ${gtoolkitVersion} because 'version' is an attribute of the task
+        tasks.loadBaselineGt.expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new repository: 'github://${ghOwner}/${project.name}:${ext.branch}/src'; baseline: '${baseline}'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable. GtTranscript installDefault ]"
+        tasks.assembleGt.toImageName = "${ext.imageName}"
+        tasks.retrieveFreshGtoolkitImage.gtVersion = ext.gtoolkitVersion
+        tasks.runGt.gtImage = "${ext.imageName}"
+    }
+}
+
+task retrieveFreshGtoolkitImage(type: RetrieveFreshGtoolkitImageTask, dependsOn: [ retrieveLatestGtoolkitVersion, removePreviousGtoolkitImage ]) {
     gtHome = gtoolkitHome
     gtVersion = gtoolkitVersion
 }
 
-task loadPharoEDAPeers(type: EvalPharoExpressionTask, dependsOn: downloadFreshPharoImage) {
+task loadBaseline(type: EvalPharoExpressionTask, dependsOn: downloadFreshPharoImage) {
     pharoPath = customPharoPath
     commonPharoArgs = customPharoArgs
-    expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new repository: 'github://rydnr/${project.name}:${branchOrTag}/src'; baseline: '${baseline}'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable ]"
+    expression = ""
 }
 
-task loadPharoEDAPeersGt(type: EvalGtExpressionTask, dependsOn: retrieveFreshGtoolkitImage) {
+task loadBaselineGt(type: EvalGtExpressionTask, dependsOn: retrieveFreshGtoolkitImage) {
     gtPath = customGtPath
-    expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new baseline: '${baseline}'; repository: 'github://rydnr/${project.name}:${branchOrTag}/src'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable. GtTranscript installDefault ]"
+    expression = ""
 }
 
-task customizeImage(type: RunPharoScriptTask, dependsOn: loadPharoEDAPeers) {
+task customizeImage(type: RunPharoScriptTask, dependsOn: loadBaseline) {
     script = "customize.st"
     pharoPath = customPharoPath
     commonPharoArgs = customPharoArgs
 }
 
-task customizeImageGt(type: RunGtScriptTask, dependsOn: loadPharoEDAPeersGt) {
+task customizeImageGt(type: RunGtScriptTask, dependsOn: loadBaselineGt) {
     script = "customizeGt.st"
     gtPath = customGtPath
 }
 
 task assemble(type: SavePharoImageTask, dependsOn: customizeImage) {
-    toImageName = imageName
+    toImageName = "${imageName}"
     shouldDeleteOldImage = true
     pharoPath = customPharoPath
     commonPharoArgs = customPharoArgs
 }
 
 task assembleGt(type: SaveGtoolkitImageTask, dependsOn: customizeImageGt) {
-    toImageName = "gt-${imageName}"
+    toImageName = "${imageName}"
     shouldDeleteOldImage = false
 }
 
@@ -103,7 +127,7 @@ task runUi(type: RunPharoUiTask, dependsOn: assemble) {
 }
 
 task runGt(type: RunGtTask, dependsOn: assembleGt) {
-    gtImage = "gt-${imageName}"
+    gtImage = imageName
 }
 
 task clean(type: Delete) {

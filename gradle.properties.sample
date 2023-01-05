@@ -1,6 +1,3 @@
 owner=FIXME
 baseline=FIXME
-tag=main
-branchOrTag=main
-versionSuffix=-SNAPSHOT
 # vim: syntax=sh ts=2 sw=2 sts=4 sr noet
