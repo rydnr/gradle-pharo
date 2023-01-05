@@ -1,0 +1,375 @@
+buildscript {
+    ext.gtoolkitVersion = 'unknown'
+    repositories {
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath group: 'org.jsoup', name: 'jsoup', version: '1.11.2'
+    }
+}
+
+plugins {
+    id "io.github.http-builder-ng.http-plugin" version "0.1.1"
+}
+
+apply plugin: PharoPlugin
+
+pharo {
+    imageVersion = '100'
+}
+
+ext {
+    gtoolkitVersion = 'unknown'
+}
+
+def Properties properties = new Properties()
+properties.load(project.rootProject.file('gradle-local.properties').newDataInputStream())
+def customPharoPath = properties.getProperty('pharoPath')
+def customPharoUiPath = properties.getProperty('pharoUiPath')
+def customPharoArgs = properties.getProperty('pharoArgs').split(",").toList()
+def gtoolkitHome = properties.getProperty('gtoolkitHome')
+def customGtPath = properties.getProperty('gtoolkitPath')
+def version
+def imageName
+
+task setVersion() {
+    // tag, branchOrTag and versionSuffix are defined in gradle.properties
+    version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
+    imageName = "${project.name}-${version}"
+}
+
+
+task retrieveLatestGtoolkitVersion(type: RetrieveLatestGtoolkitVersionTask) {
+    doLast {
+        // tag, branchOrTag and versionSuffix are defined in gradle.properties
+        ext.gtoolkitVersion = tasks.retrieveLatestGtoolkitVersion.retrieveGtVersion()
+        version = "${branchOrTag}${versionSuffix}" // do not forget to update the version also in docker.gradle
+        imageName = "${project.name}-gt${gtoolkitVersion}-${version}"
+    }
+}
+
+task setGtVersion(dependsOn: retrieveLatestGtoolkitVersion)
+
+task removePreviousPharoImage(type: RemovePreviousPharoImageTask)
+
+task removePreviousGtoolkitImage(type: RemovePreviousGtoolkitImageTask)
+
+task downloadFreshPharoImage(type: DownloadPharoImageTask, dependsOn: [ setVersion, removePreviousPharoImage ])
+
+task retrieveFreshGtoolkitImage(type: RetrieveFreshGtoolkitImageTask, dependsOn: [ setGtVersion, removePreviousGtoolkitImage ]) {
+    gtHome = gtoolkitHome
+    gtVersion = gtoolkitVersion
+}
+
+task loadPharoEDAPeers(type: EvalPharoExpressionTask, dependsOn: downloadFreshPharoImage) {
+    pharoPath = customPharoPath
+    commonPharoArgs = customPharoArgs
+    expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new repository: 'github://rydnr/${project.name}:${branchOrTag}/src'; baseline: '${baseline}'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable ]"
+}
+
+task loadPharoEDAPeersGt(type: EvalGtExpressionTask, dependsOn: retrieveFreshGtoolkitImage) {
+    gtPath = customGtPath
+    expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new baseline: '${baseline}'; repository: 'github://rydnr/${project.name}:${branchOrTag}/src'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable. GtTranscript installDefault ]"
+}
+
+task customizeImage(type: RunPharoScriptTask, dependsOn: loadPharoEDAPeers) {
+    script = "customize.st"
+    pharoPath = customPharoPath
+    commonPharoArgs = customPharoArgs
+}
+
+task customizeImageGt(type: RunGtScriptTask, dependsOn: loadPharoEDAPeersGt) {
+    script = "customizeGt.st"
+    gtPath = customGtPath
+}
+
+task assemble(type: SavePharoImageTask, dependsOn: customizeImage) {
+    toImageName = imageName
+    shouldDeleteOldImage = true
+    pharoPath = customPharoPath
+    commonPharoArgs = customPharoArgs
+}
+
+task assembleGt(type: SaveGtoolkitImageTask, dependsOn: customizeImageGt) {
+    toImageName = "gt-${imageName}"
+    shouldDeleteOldImage = false
+}
+
+task runUi(type: RunPharoUiTask, dependsOn: assemble) {
+    image = imageName
+}
+
+task runGt(type: RunGtTask, dependsOn: assembleGt) {
+    gtImage = "gt-${imageName}"
+}
+
+task clean(type: Delete) {
+    def foldersToDelete = []
+    new File('.').eachDir {
+        if (it.name.startsWith('image.')) {
+            foldersToDelete << it.name
+        }
+    }
+    delete foldersToDelete +
+            ["${imageName}.image", "${imageName}.changes", 'package-cache', 'play-cache', 'pharo-local', 'github-cache', '.gradle', 'PharoDebug.log']
+}
+
+class PharoPlugin implements Plugin<Project> {
+    void apply(Project project) {
+        project.extensions.create("pharo", PharoPluginExtension)
+    }
+}
+
+class PharoPluginExtension {
+    String zeroConfUrl = "http://get.pharo.org/64"
+    String imageVersion = 'stable'
+}
+
+class RemovePreviousPharoImageTask extends DefaultTask {
+    @TaskAction
+    def removePreviousPharoImage() {
+        project.exec {
+            commandLine "bash", "-c", "rm -f Pharo.image Pharo.changes"
+        }
+    }
+}
+
+class RemovePreviousGtoolkitImageTask extends DefaultTask {
+    @TaskAction
+    def removePreviousGtoolkitImage() {
+        project.exec {
+            commandLine "bash", "-c", "rm -rf GlamorousToolkit"
+        }
+    }
+}
+
+class DownloadPharoImageTask extends DefaultTask {
+    @TaskAction
+    def downloadFreshImage() {
+        def wget = (System.getProperty('os.name').startsWith('Mac') ? 'curl' : 'wget -O-')
+        project.exec {
+            commandLine "bash", "-c", "${wget} ${project.pharo.zeroConfUrl}/${project.pharo.imageVersion} | bash"
+        }
+    }
+}
+
+class RetrieveFreshGtoolkitImageTask extends DefaultTask {
+    @Input String gtHome
+    @Input String gtVersion
+    @TaskAction
+    def retrieveFreshImage() {
+        project.exec {
+            commandLine "bash", "-c", "curl --output GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip https://dl.feenk.com/gt/GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip"
+        }
+        project.exec {
+            commandLine "bash", "-c", "jar xf GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip"
+        }
+        project.exec {
+            commandLine "bash", "-c", "chmod +x bin/*"
+        }
+    }
+}
+
+class RetrieveLatestGtoolkitVersionTask extends DefaultTask {
+
+    @Internal String version
+
+    String retrieveGtVersion() {
+        println "Retrieving version: ${version}"
+        version
+    }
+
+    @TaskAction
+    def retrieveLatestVersion() {
+
+        org.jsoup.nodes.Document page = groovyx.net.http.HttpBuilder.configure {
+            request.uri = 'https://dl.feenk.com/gt/' // https://mvnrepository.com/artifact/org.codehaus.groovy/groovy-all
+        }.get()
+
+        String result =
+            page.select('a[href*=GlamorousToolkit-Linux-x86_64-v]').select(':not(a[href*=release])').collect {
+                def match = (it.text() =~ /GlamorousToolkit-Linux-x86_64-v(.+)\.zip/)
+                if (match.find()) {
+                    return match.group(1)
+                } else {
+                    return it.text()
+                }
+
+            }.last()
+
+        println "Setting version to ${result}"
+        this.version = result
+    }
+}
+
+class SavePharoImageTask extends DefaultTask {
+    @Input String fromImageName = "Pharo.image"
+    @Input String pharoPath = "pharo"
+    @Input def commonPharoArgs
+    @Input String toImageName
+    @Input boolean shouldDeleteOldImage
+
+    @TaskAction
+    def renamePharoImage() {
+        def pharoArgs = []
+        pharoArgs.addAll(commonPharoArgs)
+        pharoArgs.addAll([fromImageName, "save", toImageName])
+        if (shouldDeleteOldImage) {
+            pharoArgs << "--delete-old"
+        }
+        project.exec {
+            executable "${pharoPath}"
+            args pharoArgs
+        }
+    }
+}
+
+class SaveGtoolkitImageTask extends DefaultTask {
+    @Input String fromImageName = "GlamorousToolkit.image"
+    @Input String gtPath = "bin/GlamorousToolkit-cli"
+    @Input String toImageName
+    @Input boolean shouldDeleteOldImage
+
+    @TaskAction
+    def renameGtoolkitImage() {
+        project.exec {
+            commandLine "bash", "-c", "${gtPath} ${fromImageName} save ${toImageName}"
+        }
+        if (shouldDeleteOldImage) {
+            project.exec {
+                commandLine "bash", "-c", "rm -f ${fromImageName}"
+            }
+        }
+    }
+}
+
+class LoadMetacelloConfigTask extends DefaultTask {
+    @Input String image = "Pharo.image"
+    @Input String pharoPath = "pharo"
+    @Input def commonPharoArgs
+    @Input String repository
+    @Input String configuration
+    @Input String version
+
+    @TaskAction
+    def loadMetacelloConfig() {
+        def pharoArgs = []
+        pharoArgs.addAll(commonPharoArgs)
+        pharoArgs.addAll([image, "config", repository, configuration, "--install=${version}"])
+        project.exec {
+            executable "${pharoPath}"
+            args pharoArgs
+        }
+    }
+}
+
+class EvalPharoExpressionTask extends DefaultTask {
+    @Input String image = "Pharo.image"
+    @Input String pharoPath = "pharo"
+    @Input def commonPharoArgs
+    @Input String expression
+
+    @TaskAction
+    def evalSmalltalkExpression() {
+        def pharoArgs = []
+        pharoArgs.addAll(commonPharoArgs)
+        pharoArgs.addAll([image, "eval", "--save", expression])
+        println "${pharoPath} ${commonPharoArgs} ${image} eval --save ${expression}"
+        project.exec {
+            executable "${pharoPath}"
+            args pharoArgs
+        }
+    }
+}
+
+class EvalGtExpressionTask extends DefaultTask {
+    @Input String gtImage = "GlamorousToolkit.image"
+    @Input String gtPath = "bin/GlamorousToolkit-cli"
+    @Input String expression
+
+    @TaskAction
+    def evalSmalltalkExpression() {
+        project.exec {
+            commandLine "bash", "-c", "${gtPath} ${gtImage} eval --save \"${expression}\""
+        }
+    }
+}
+
+class RunPharoScriptTask extends DefaultTask {
+    @Input String image = "Pharo.image"
+    @Input String pharoPath = "pharo"
+    @Input def commonPharoArgs
+    @Input String script
+
+    @TaskAction
+    def runSmalltalkScript() {
+       def pharoArgs = []
+       pharoArgs.addAll(commonPharoArgs)
+       pharoArgs.addAll([image, "st", "--quit", "--save", script])
+       project.exec {
+           executable "${pharoPath}"
+           args pharoArgs
+       }
+    }
+}
+
+class RunGtScriptTask extends DefaultTask {
+    @Input String gtImage = "GlamorousToolkit.image"
+    @Input String gtPath = "bin/GlamorousToolkit-cli"
+    @Input String script
+
+    @TaskAction
+    def runSmalltalkScript() {
+        project.exec {
+            commandLine "bash", "-c", "${gtPath} ${gtImage} st --quit --save \"${script}\""
+        }
+    }
+}
+
+class RunPharoUiTask extends DefaultTask {
+    @Input String image = "Pharo.image"
+    @Input String pharoUiPath = "pharo-ui"
+
+    @TaskAction
+    def runUi() {
+        project.exec {
+            commandLine "bash", "-c", "${pharoUiPath} ${image}"
+        }
+    }
+}
+
+class RunGtTask extends DefaultTask {
+    @Input String gtImage = "GlamorousToolkit.image"
+    @Input String gtPath = "bin/GlamorousToolkit"
+
+    @TaskAction
+    def runUi() {
+        println "${gtPath} --image ${gtImage}.image"
+        project.exec {
+            commandLine "bash", "-c", "${gtPath} --image ${gtImage}.image"
+        }
+    }
+}
+
+class RunPharoTestsTask extends DefaultTask {
+    @Input String image = "Pharo.image"
+    @Input String pharoPath = "pharo"
+    @Input def commonPharoArgs
+    @Input String packageName
+    @Input boolean shouldOutputAsJUnit
+
+    @TaskAction
+    def runTests() {
+        def pharoArgs = []
+        pharoArgs.addAll(commonPharoArgs)
+        pharoArgs.addAll([image, "test", packageName])
+        if (shouldOutputAsJUnit) {
+            pharoArgs << "--junit-xml-output"
+        }
+        project.exec {
+            executable "${pharoPath}"
+            args pharoArgs
+        }
+    }
+}
