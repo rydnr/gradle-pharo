@@ -26,3 +26,4 @@ crash.dmp
 gt-extra/
 lib/
 *.log
+**/*.orig.png
