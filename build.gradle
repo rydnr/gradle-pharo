@@ -78,15 +78,24 @@ task retrieveLatestGtoolkitVersion(type: RetrieveLatestGtoolkitVersionTask) {
         ext.imageName = "${project.name}-gt${ext.gtoolkitVersion}-${ext.version}" // ${version} == ${gtoolkitVersion} because 'version' is an attribute of the task
         tasks.loadBaselineGt.expression = "EpMonitor current disable. NonInteractiveTranscript stdout install. [ Metacello new repository: 'github://${ghOwner}/${project.name}:${ext.branch}/src'; baseline: '${baseline}'; onConflictUseLoaded; load ] ensure: [ EpMonitor current enable. GtTranscript installDefault ]"
         tasks.assembleGt.toImageName = "${ext.imageName}"
-        tasks.retrieveFreshGtoolkitImage.gtVersion = ext.gtoolkitVersion
+        tasks.downloadGtoolkit.gtVersion = ext.gtoolkitVersion
+        tasks.unpackGtoolkitArtifact.gtVersion = ext.gtoolkitVersion
         tasks.runGt.gtImage = "${ext.imageName}"
     }
 }
 
-task retrieveFreshGtoolkitImage(type: RetrieveFreshGtoolkitImageTask, dependsOn: [ retrieveLatestGtoolkitVersion, removePreviousGtoolkitImage ]) {
+task downloadGtoolkit(type: DownloadGtoolkitTask, dependsOn: [ retrieveLatestGtoolkitVersion, removePreviousGtoolkitImage ]) {
     gtHome = gtoolkitHome
     gtVersion = gtoolkitVersion
 }
+
+task unpackGtoolkitArtifact(type: UnpackGtoolkitArtifactTask, dependsOn: downloadGtoolkit) {
+    gtVersion = gtoolkitVersion
+}
+
+task fixGtoolkitPermissions(type: FixGtoolkitPermissionsTask, dependsOn: unpackGtoolkitArtifact)
+
+task gtoolkit(dependsOn: fixGtoolkitPermissions)
 
 task loadBaseline(type: EvalPharoExpressionTask, dependsOn: downloadFreshPharoImage) {
     pharoPath = customPharoPath
@@ -94,7 +103,7 @@ task loadBaseline(type: EvalPharoExpressionTask, dependsOn: downloadFreshPharoIm
     expression = ""
 }
 
-task loadBaselineGt(type: EvalGtExpressionTask, dependsOn: retrieveFreshGtoolkitImage) {
+task loadBaselineGt(type: EvalGtExpressionTask, dependsOn: gtoolkit) {
     gtPath = customGtPath
     expression = ""
 }
@@ -173,24 +182,36 @@ class RemovePreviousGtoolkitImageTask extends DefaultTask {
 class DownloadPharoImageTask extends DefaultTask {
     @TaskAction
     def downloadFreshImage() {
-        def wget = (System.getProperty('os.name').startsWith('Mac') ? 'curl' : 'wget -O-')
         project.exec {
-            commandLine "bash", "-c", "${wget} ${project.pharo.zeroConfUrl}/${project.pharo.imageVersion} | bash"
+            commandLine "bash", "-c", "curl -s ${project.pharo.zeroConfUrl}/${project.pharo.imageVersion} | bash"
         }
     }
 }
 
-class RetrieveFreshGtoolkitImageTask extends DefaultTask {
+class DownloadGtoolkitTask extends DefaultTask {
     @Input String gtHome
     @Input String gtVersion
     @TaskAction
     def retrieveFreshImage() {
         project.exec {
-            commandLine "bash", "-c", "curl --output GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip https://dl.feenk.com/gt/GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip"
+            commandLine "bash", "-c", "curl -s --output GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip https://dl.feenk.com/gt/GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip"
         }
+    }
+}
+
+class UnpackGtoolkitArtifactTask extends DefaultTask {
+    @Input String gtVersion
+    @TaskAction
+    def unpack() {
         project.exec {
             commandLine "bash", "-c", "jar xf GlamorousToolkit-Linux-x86_64-v${gtVersion}.zip"
         }
+    }
+}
+
+class FixGtoolkitPermissionsTask extends DefaultTask {
+    @TaskAction
+    def chmod() {
         project.exec {
             commandLine "bash", "-c", "chmod +x bin/*"
         }
